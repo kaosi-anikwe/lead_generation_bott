@@ -9,6 +9,7 @@ from typing import Tuple, List, Dict, Any, Optional
 # installed imports
 from openai import OpenAI
 from dotenv import load_dotenv
+from pypdf import PdfReader
 
 # local imports
 from . import logger
@@ -24,7 +25,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 
 def load_instructions_from_file(instructions_file_path: str) -> str:
-    """Load assistant instructions from a text file"""
+    """Load assistant instructions from a text file or PDF"""
     try:
         if not os.path.exists(instructions_file_path):
             logger.warning(
@@ -32,16 +33,49 @@ def load_instructions_from_file(instructions_file_path: str) -> str:
             )
             return "You are a helpful AI assistant."
 
-        with open(instructions_file_path, "r", encoding="utf-8") as file:
-            instructions = file.read().strip()
-            if not instructions:
-                logger.warning(
-                    f"Instructions file {instructions_file_path} is empty, using default"
-                )
+        # First, try to detect if it's a PDF by reading the first few bytes
+        with open(instructions_file_path, "rb") as file:
+            header = file.read(5)
+            file.seek(0)
+            
+        if header.startswith(b'%PDF-'):
+            # It's a PDF file
+            try:
+                reader = PdfReader(instructions_file_path)
+                instructions = ""
+                for page in reader.pages:
+                    instructions += page.extract_text() + "\n"
+                
+                instructions = instructions.strip()
+                if not instructions:
+                    logger.warning(
+                        f"PDF file {instructions_file_path} contains no readable text, using default"
+                    )
+                    return "You are a helpful AI assistant."
+                
+                logger.info(f"Loaded instructions from PDF {instructions_file_path}")
+                return instructions
+                
+            except Exception as e:
+                logger.error(f"Error reading PDF file {instructions_file_path}: {e}")
                 return "You are a helpful AI assistant."
+        else:
+            # Assume it's a text file
+            try:
+                with open(instructions_file_path, "r", encoding="utf-8") as file:
+                    instructions = file.read().strip()
+                    if not instructions:
+                        logger.warning(
+                            f"Instructions file {instructions_file_path} is empty, using default"
+                        )
+                        return "You are a helpful AI assistant."
 
-            logger.info(f"Loaded instructions from {instructions_file_path}")
-            return instructions
+                    logger.info(f"Loaded instructions from text file {instructions_file_path}")
+                    return instructions
+                    
+            except UnicodeDecodeError:
+                logger.error(f"File {instructions_file_path} is not a valid text file or PDF")
+                return "You are a helpful AI assistant."
 
     except Exception as e:
         logger.error(f"Error reading instructions file {instructions_file_path}: {e}")
@@ -57,13 +91,37 @@ def setup_knowledge_base(
         return FUNCTION_DESCRIPTIONS, None
 
     try:
-        # Upload knowledge document
-        with open(knowledge_file_path, "rb") as knowledge_file:
-            knowledge_doc = io.BytesIO(knowledge_file.read())
-            knowledge_doc.name = (
-                f"{uuid.uuid4().hex}_{os.path.basename(knowledge_file_path)}"
-            )
+        # Detect file type and prepare content
+        with open(knowledge_file_path, "rb") as file:
+            header = file.read(5)
+            file.seek(0)  # Reset file pointer
+            
+        if header.startswith(b'%PDF-'):
+            # It's a PDF file - upload directly as binary
+            with open(knowledge_file_path, "rb") as knowledge_file:
+                knowledge_doc = io.BytesIO(knowledge_file.read())
+                knowledge_doc.name = f"{uuid.uuid4().hex}_{os.path.basename(knowledge_file_path)}.pdf"
+            logger.info(f"Preparing PDF knowledge base: {knowledge_file_path}")
+            
+        else:
+            # It's a text file - convert to proper format for upload
+            try:
+                with open(knowledge_file_path, "r", encoding="utf-8") as text_file:
+                    text_content = text_file.read()
+                
+                # Create a BytesIO object with the text content
+                knowledge_doc = io.BytesIO(text_content.encode('utf-8'))
+                knowledge_doc.name = f"{uuid.uuid4().hex}_{os.path.basename(knowledge_file_path)}.txt"
+                logger.info(f"Preparing text knowledge base: {knowledge_file_path}")
+                
+            except UnicodeDecodeError:
+                # If it's not a valid text file and not a PDF, treat as binary
+                with open(knowledge_file_path, "rb") as knowledge_file:
+                    knowledge_doc = io.BytesIO(knowledge_file.read())
+                    knowledge_doc.name = f"{uuid.uuid4().hex}_{os.path.basename(knowledge_file_path)}"
+                logger.info(f"Preparing binary knowledge base: {knowledge_file_path}")
 
+        # Upload knowledge document
         file = client.files.create(
             file=knowledge_doc,
             purpose="assistants",
