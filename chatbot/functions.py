@@ -4,6 +4,7 @@ import io
 import json
 import uuid
 import traceback
+import requests
 from typing import Tuple, List, Dict, Any, Optional
 
 # installed imports
@@ -259,6 +260,173 @@ def get_conversation(thread_id: str, client: OpenAI = client) -> str:
         return f"Error retrieving conversation: {str(e)}"
 
 
-FUNCTION_DESCRIPTIONS = []
+def extract_user_info(user_info: str) -> dict:
+    """Extract and process user information for appointment booking."""
+    try:
+        info = json.loads(user_info)
+        
+        # Send webhook to LEAD_WEBHOOK
+        webhook_url = os.getenv("LEAD_WEBHOOK")
+        if webhook_url:
+            try:
+                response = requests.post(webhook_url, json=info)
+                logger.info(f"Lead webhook sent successfully: {response.status_code}")
+            except Exception as e:
+                logger.error(f"Failed to send lead webhook: {e}")
+        
+        return {
+            "success": True,
+            "message": "User information extracted and processed successfully",
+            "data": info
+        }
+    except json.JSONDecodeError:
+        logger.error(f"Invalid JSON in user_info: {user_info}")
+        return {
+            "success": False,
+            "message": "Invalid user information format"
+        }
+    except Exception as e:
+        logger.error(f"Error processing user info: {e}")
+        return {
+            "success": False,
+            "message": "Failed to process user information"
+        }
 
-FUNCTIONS = {}
+
+def contact_support(user_info: str) -> dict:
+    """Forward user complaint/request to support team."""
+    try:
+        info = json.loads(user_info)
+
+        info["email"] = os.getenv("EMAIL_RECIPIENT")
+        
+        # Send webhook to NOLEAD_WEBHOOK
+        webhook_url = os.getenv("NOLEAD_WEBHOOK")
+        if webhook_url:
+            try:
+                response = requests.post(webhook_url, json=info)
+                logger.info(f"Support webhook sent successfully: {response.status_code}")
+            except Exception as e:
+                logger.error(f"Failed to send support webhook: {e}")
+        
+        return {
+            "success": True,
+            "message": "Your request has been forwarded to our support team. They will contact you shortly."
+        }
+    except json.JSONDecodeError:
+        logger.error(f"Invalid JSON in user_info: {user_info}")
+        return {
+            "success": False,
+            "message": "Invalid user information format"
+        }
+    except Exception as e:
+        logger.error(f"Error contacting support: {e}")
+        return {
+            "success": False,
+            "message": "Failed to contact support"
+        }
+
+
+def image_upload(upload: bool, prompt: str) -> dict:
+    """Prompt user to upload an image if beneficial for their situation."""
+    return {
+        "upload_needed": upload,
+        "prompt": prompt,
+        "message": prompt if upload else "No image upload needed for this situation."
+    }
+
+
+def embed_video(embed: bool, prompt: str) -> dict:
+    """Display testimonial videos when user requests reviews or referrals."""
+    return {
+        "embed_video": embed,
+        "prompt": prompt,
+        "message": prompt if embed else "No video testimonials needed for this request."
+    }
+
+
+FUNCTION_DESCRIPTIONS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "extract_user_info",
+            "description": "Extracts and processes complete user information for appointment booking. ONLY call this function ONCE when ALL required information has been collected: name, email, phone number, website, and appointment summary. Do not call multiple times in the same conversation. The function sends the lead data to a webhook and returns confirmation of successful processing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_info": {
+                        "type": "string",
+                        "description": "JSON string containing complete user information with required fields: name, email, phone_number, website, and info (appointment summary). Example: {\"name\": \"John Doe\", \"email\": \"john@example.com\", \"phone_number\": \"123-456-7890\", \"website\": \"example.com\", \"info\": \"interested in mental health course consultation\"}",
+                    }
+                },
+                "required": ["user_info"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "contact_support",
+            "description": "Forwards user complaints or requests that cannot be handled directly to the support team. Use when user needs manager escalation, receipt retrieval, or other support-only tasks. Requires complete user information before submission.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_info": {
+                        "type": "string",
+                        "description": "JSON string containing user information with fields: name, email, phone_number, and info (complaint/request details). Example: {\"name\": \"Jane Smith\", \"email\": \"jane@example.com\", \"phone_number\": \"987-654-3210\", \"info\": \"need to speak with manager about billing issue\"}",
+                    }
+                },
+                "required": ["user_info"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "image_upload",
+            "description": "Determines if the user's situation would benefit from uploading an image for better assistance. Only call when visual context would genuinely help resolve their issue. Does not handle actual upload - only prompts the user.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "upload": {
+                        "type": "boolean",
+                        "description": "Whether the current situation would benefit from an image upload.",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "User-friendly message explaining why an image would be helpful and requesting upload.",
+                    },
+                },
+                "required": ["upload", "prompt"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "embed_video",
+            "description": "Shows testimonial videos when users request reviews, referrals, or want to see other clients the company has worked with. Only call when user specifically asks about testimonials, reviews, or proof of past work.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "embed": {
+                        "type": "boolean",
+                        "description": "Whether to display testimonial videos based on user request.",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "User-friendly message introducing the testimonial content.",
+                    },
+                },
+                "required": ["embed", "prompt"],
+            },
+        },
+    },
+]
+
+FUNCTIONS = {
+    "extract_user_info": extract_user_info,
+    "contact_support": contact_support,
+    "image_upload": image_upload,
+    "embed_video": embed_video,
+}
